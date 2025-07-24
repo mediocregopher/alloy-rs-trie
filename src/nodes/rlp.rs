@@ -7,7 +7,6 @@ const MAX: usize = 33;
 
 /// An RLP-encoded node.
 #[derive(Clone, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RlpNode(ArrayVec<u8, MAX>);
 
 impl alloy_rlp::Decodable for RlpNode {
@@ -123,5 +122,76 @@ impl proptest::arbitrary::Arbitrary for RlpNode {
         proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=MAX)
             .prop_map(|vec| Self::from_raw(&vec).unwrap())
             .boxed()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for RlpNode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let hex_string = hex::encode_prefixed(&self.0);
+        serializer.serialize_str(&hex_string)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for RlpNode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let hex_string = String::deserialize(deserializer)?;
+        let bytes = hex::decode(&hex_string).map_err(serde::de::Error::custom)?;
+        
+        if bytes.len() > MAX {
+            return Err(serde::de::Error::custom(format!(
+                "RlpNode hex string too long: {} bytes (max {})",
+                bytes.len(),
+                MAX
+            )));
+        }
+        
+        let mut arr = ArrayVec::new();
+        arr.try_extend_from_slice(&bytes).map_err(|_| {
+            serde::de::Error::custom(format!(
+                "RlpNode data too long: {} bytes (max {})",
+                bytes.len(),
+                MAX
+            ))
+        })?;
+        Ok(RlpNode(arr))
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod tests {
+    use super::*;
+
+    // Helper struct to test serialization
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct TestWrapper {
+        node: RlpNode,
+    }
+
+    #[test]
+    fn test_rlp_node_serde_compiles() {
+        // This test just verifies that our serde implementation compiles correctly
+        // We can't test the actual JSON output without serde_json
+        
+        // Test with empty node
+        let empty = RlpNode::default();
+        let _wrapper = TestWrapper { node: empty };
+
+        // Test with some data
+        let data = vec![0x01, 0x02, 0x03, 0x04, 0x05];
+        let node = RlpNode::from_raw(&data).unwrap();
+        let _wrapper = TestWrapper { node };
+
+        // Test with max size data (33 bytes)
+        let max_data = vec![0xff; 33];
+        let max_node = RlpNode::from_raw(&max_data).unwrap();
+        let _wrapper = TestWrapper { node: max_node };
     }
 }

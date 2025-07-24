@@ -14,7 +14,6 @@ use alloc::vec::Vec;
 /// data associated with the full key. When searching the trie for a specific key, reaching a leaf
 /// node means that the search has successfully found the value associated with that key.
 #[derive(PartialEq, Eq, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LeafNode {
     /// The key for this leaf node.
     pub key: Nibbles,
@@ -160,5 +159,100 @@ mod tests {
         let rlp = leaf.as_ref().rlp(&mut vec![]);
         assert_eq!(rlp.as_ref(), hex!("c98320646f8476657262"));
         assert_eq!(LeafNode::decode(&mut &rlp[..]).unwrap(), leaf);
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for LeafNode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        
+        let mut state = serializer.serialize_struct("LeafNode", 2)?;
+        state.serialize_field("key", &self.key)?;
+        let value_hex = hex::encode_prefixed(&self.value);
+        state.serialize_field("value", &value_hex)?;
+        state.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for LeafNode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor, MapAccess};
+        
+        struct LeafNodeVisitor;
+        
+        impl<'de> Visitor<'de> for LeafNodeVisitor {
+            type Value = LeafNode;
+            
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("struct LeafNode with key and hex-encoded value")
+            }
+            
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut key = None;
+                let mut value = None;
+                
+                while let Some(field) = map.next_key::<String>()? {
+                    match field.as_str() {
+                        "key" => {
+                            if key.is_some() {
+                                return Err(de::Error::duplicate_field("key"));
+                            }
+                            key = Some(map.next_value()?);
+                        }
+                        "value" => {
+                            if value.is_some() {
+                                return Err(de::Error::duplicate_field("value"));
+                            }
+                            let hex_str: String = map.next_value()?;
+                            let bytes = hex::decode(&hex_str).map_err(de::Error::custom)?;
+                            value = Some(bytes);
+                        }
+                        _ => {
+                            let _: de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                
+                let key = key.ok_or_else(|| de::Error::missing_field("key"))?;
+                let value = value.ok_or_else(|| de::Error::missing_field("value"))?;
+                
+                Ok(LeafNode { key, value })
+            }
+        }
+        
+        const FIELDS: &[&str] = &["key", "value"];
+        deserializer.deserialize_struct("LeafNode", FIELDS, LeafNodeVisitor)
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn test_leaf_node_serde_compiles() {
+        // Test basic serialization compiles
+        let nibbles = Nibbles::from_nibbles_unchecked(hex!("0604060f"));
+        let value = hex!("76657262");
+        let leaf = LeafNode::new(nibbles, value.to_vec());
+        
+        // Test we can put it in a wrapper that requires Serialize/Deserialize
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Wrapper {
+            node: LeafNode,
+        }
+        
+        let _wrapper = Wrapper { node: leaf };
     }
 }
